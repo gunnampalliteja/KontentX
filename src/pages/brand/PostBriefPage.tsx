@@ -8,7 +8,7 @@ import {
 import { useAppStore, useAuthStore } from '../../store';
 import { Brief, Format, CreatorNiche } from '../../types';
 import { ALL_NICHES, ALL_COUNTRIES, ALL_PLATFORMS } from '../../data/mockData';
-import { apiRequest } from '../../api';
+import { apiRequest, isStaticHostFallbackError } from '../../api';
 import toast from 'react-hot-toast';
 
 interface AiStatusResponse {
@@ -139,7 +139,22 @@ export default function PostBriefPage() {
       }
       setActiveTab('manual');
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Unable to generate campaign brief.');
+      if (isStaticHostFallbackError(error)) {
+        const ideaLower = inputPrompt.toLowerCase();
+        const inferredNiches: CreatorNiche[] = ideaLower.includes('video') || ideaLower.includes('vfx')
+          ? ['AI Video Editing & VFX', 'Vlogging & Lifestyle']
+          : ideaLower.includes('food') || ideaLower.includes('cafe')
+            ? ['Food & Cooking', 'Vlogging & Lifestyle']
+            : ['Technology & Gadgets', 'AI Video Editing & VFX'];
+        setTitle(`${inferredNiches[0]} Campaign — ${inputPrompt.slice(0, 48).trim()}`);
+        setDescription(`${inputPrompt.trim()}\n\nCampaign Objectives:\n- High-retention storytelling tailored for target platforms.\n- Full commercial usage rights and AI tool transparency.`);
+        setTargetNiches(inferredNiches);
+        setAiNotice('Generated a structured draft using KontentX rule-based brief analysis. Review and edit all fields before saving.');
+        toast.success('Structured brief draft prepared! Edit any field before saving.');
+        setActiveTab('manual');
+      } else {
+        toast.error(error instanceof Error ? error.message : 'Unable to generate campaign brief.');
+      }
     } finally {
       setIsGenerating(false);
     }

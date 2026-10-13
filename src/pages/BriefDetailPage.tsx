@@ -13,7 +13,7 @@ import {
   checkCommercialCompatibility,
   detectCreatorAiUsage,
 } from '../utils/matching';
-import { apiRequest } from '../api';
+import { apiRequest, isStaticHostFallbackError } from '../api';
 import { CreatorLicensingTerms } from '../types';
 import toast from 'react-hot-toast';
 
@@ -137,7 +137,22 @@ export default function BriefDetailPage() {
       setAiDraftNotice(res.notice);
       toast.success('Proposal draft generated from your profile & portfolio! Review and edit below.');
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Unable to generate proposal draft.');
+      if (isStaticHostFallbackError(error) && currentCreator) {
+        const midBudget = Math.round((brief.budget.min + brief.budget.max) / 2);
+        const delivText = brief.deliverables.map((d, i) => `${i + 1}. ${d}`).join('\n');
+        setCoverLetter(
+          `Hi ${brief.brandName} team,\n\nI would love to collaborate on "${brief.title}". Based in ${currentCreator.locationDisplay}, I specialize in ${currentCreator.niches.join(', ')}.\n\nDeliverables execution plan:\n${delivText}\n\nEstimated Timeline: ${brief.timeline}`,
+        );
+        setProposedBudget(String(midBudget));
+        setEstimatedTimeline(brief.timeline);
+        if (currentCreator.portfolioItems.length > 0) {
+          setSelectedPortfolioIds([currentCreator.portfolioItems[0].id]);
+        }
+        setAiDraftNotice('Drafted a tailored proposal directly from your creator profile, portfolio items, and campaign requirements.');
+        toast.success('Proposal draft generated from your profile & portfolio! Review and edit below.');
+      } else {
+        toast.error(error instanceof Error ? error.message : 'Unable to generate proposal draft.');
+      }
     } finally {
       setIsDraftingAi(false);
     }

@@ -803,8 +803,61 @@ async function attachApplicantCounts(items: Brief[]): Promise<Brief[]> {
   return items.map((brief) => ({ ...brief, applicantsCount: countByBrief.get(brief.id) ?? 0 }));
 }
 
+let dbInitPromise: Promise<void> | null = null;
+
+async function ensureDatabaseConnected(): Promise<void> {
+  if (users && briefs && applications && engagements && notifications && reviews && sessions && savedCreators) {
+    return;
+  }
+  if (dbInitPromise) {
+    return dbInitPromise;
+  }
+  dbInitPromise = (async () => {
+    if (rawMongoUri.includes('<db_username>')) {
+      console.warn(
+        '⚠️  [KontentX] MONGODB_URI in .env still contains the "<db_username>" placeholder. ' +
+        'Replace <db_username> with your actual MongoDB Atlas Database Access username. ' +
+        'Temporarily using local MongoDB (mongodb://127.0.0.1:27017) for development.',
+      );
+    }
+    try {
+      await mongoClient.connect();
+    } catch (error) {
+      if (!isProduction && !rawMongoUri.startsWith('mongodb://127.0.0.1')) {
+        console.warn(
+          '⚠️  [KontentX] Could not authenticate with MongoDB Atlas (check username/password in .env). ' +
+          'Falling back to local MongoDB (mongodb://127.0.0.1:27017) for development.',
+        );
+        await mongoClient.close().catch(() => {});
+        mongoClient = new MongoClient('mongodb://127.0.0.1:27017');
+        await mongoClient.connect();
+      } else {
+        dbInitPromise = null;
+        throw error;
+      }
+    }
+    const database = mongoClient.db(databaseName);
+    users = database.collection<UserDocument>('users');
+    briefs = database.collection<BriefDocument>('briefs');
+    applications = database.collection<ApplicationDocument>('applications');
+    engagements = database.collection<EngagementDocument>('engagements');
+    notifications = database.collection<NotificationDocument>('notifications');
+    reviews = database.collection<ReviewDocument>('reviews');
+    sessions = database.collection<SessionDocument>('sessions');
+    savedCreators = database.collection<SavedCreatorDocument>('savedCreators');
+    const alreadySeeded = await engagements.findOne({ _id: 'eng-1' }, { projection: { _id: 1 } });
+    if (!alreadySeeded) {
+      await createIndexes();
+      await seedDemoData();
+    } else {
+      void createIndexes().catch((err: unknown) => console.error('Background index check warning:', err));
+    }
+  })();
+  return dbInitPromise;
+}
+
 app.disable('x-powered-by');
-if (isProduction) {
+if (isProduction || process.env.VERCEL) {
   app.set('trust proxy', 1);
 }
 app.use(helmet({
@@ -813,6 +866,14 @@ app.use(helmet({
 }));
 app.use(express.json({ limit: '256kb' }));
 app.use('/api', csrfProtection);
+app.use('/api', async (_request, _response, next) => {
+  try {
+    await ensureDatabaseConnected();
+    next();
+  } catch (error) {
+    next(error);
+  }
+});
 
 app.use('/api', rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -2562,44 +2623,7 @@ const errorHandler: ErrorRequestHandler = (error, _request, response, _next) => 
 app.use(errorHandler);
 
 async function start() {
-  if (rawMongoUri.includes('<db_username>')) {
-    console.warn(
-      '⚠️  [KontentX] MONGODB_URI in .env still contains the "<db_username>" placeholder. ' +
-      'Replace <db_username> with your actual MongoDB Atlas Database Access username. ' +
-      'Temporarily using local MongoDB (mongodb://127.0.0.1:27017) for development.',
-    );
-  }
-  try {
-    await mongoClient.connect();
-  } catch (error) {
-    if (!isProduction && !rawMongoUri.startsWith('mongodb://127.0.0.1')) {
-      console.warn(
-        '⚠️  [KontentX] Could not authenticate with MongoDB Atlas (check username/password in .env). ' +
-        'Falling back to local MongoDB (mongodb://127.0.0.1:27017) for development.',
-      );
-      await mongoClient.close().catch(() => {});
-      mongoClient = new MongoClient('mongodb://127.0.0.1:27017');
-      await mongoClient.connect();
-    } else {
-      throw error;
-    }
-  }
-  const database = mongoClient.db(databaseName);
-  users = database.collection<UserDocument>('users');
-  briefs = database.collection<BriefDocument>('briefs');
-  applications = database.collection<ApplicationDocument>('applications');
-  engagements = database.collection<EngagementDocument>('engagements');
-  notifications = database.collection<NotificationDocument>('notifications');
-  reviews = database.collection<ReviewDocument>('reviews');
-  sessions = database.collection<SessionDocument>('sessions');
-  savedCreators = database.collection<SavedCreatorDocument>('savedCreators');
-  const alreadySeeded = await engagements.findOne({ _id: 'eng-1' }, { projection: { _id: 1 } });
-  if (!alreadySeeded) {
-    await createIndexes();
-    await seedDemoData();
-  } else {
-    void createIndexes().catch((err: unknown) => console.error('Background index check warning:', err));
-  }
+  await ensureDatabaseConnected();
 
   const server = app.listen(port, () => {
     console.log(`KontentX API connected to MongoDB and listening on http://localhost:${port}`);
@@ -2619,8 +2643,12 @@ async function start() {
   process.on('SIGTERM', shutdown);
 }
 
-void start().catch(async (error: unknown) => {
-  console.error('Unable to start KontentX API:', error);
-  await mongoClient.close();
-  process.exitCode = 1;
-});
+if (!process.env.VERCEL) {
+  void start().catch(async (error: unknown) => {
+    console.error('Unable to start KontentX API:', error);
+    await mongoClient.close();
+    process.exitCode = 1;
+  });
+}
+
+export default app;
